@@ -6,6 +6,7 @@ import com.tongji.counter.schema.BitmapShard;
 import com.tongji.counter.service.CounterService;
 import com.tongji.counter.event.CounterEvent;
 import com.tongji.counter.event.CounterEventProducer;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -31,6 +32,7 @@ import java.util.concurrent.TimeUnit;
  * - 读取汇总计数（SDS），异常时基于位图分片重建；
  * - 批量读取优化与“是否点赞/收藏”判定。
  */
+@Slf4j
 @Service
 public class CounterServiceImpl implements CounterService {
 
@@ -132,18 +134,31 @@ public class CounterServiceImpl implements CounterService {
      * 获取实体计数汇总（SDS）。
      * 若缺失或结构异常则触发基于位图的事实重建，并清理对应聚合字段。
      */
+    /**
+     * 获取指定实体类型和ID的计数信息。
+     *
+     * @param entityType 实体类型，用于标识计数数据的分类。
+     * @param entityId   实体ID，用于唯一标识某个具体实体。
+     * @param metrics    需要查询的指标列表，每个指标对应一个计数值。
+     * @return 返回一个映射，键为指标名称，值为对应的计数值。
+     */
     @Override
     public Map<String, Long> getCounts(String entityType, String entityId, List<String> metrics) {
+        // 构造SDS键并计算预期长度
         String sdsKey = CounterKeys.sdsKey(entityType, entityId);
         int expectedLen = CounterSchema.SCHEMA_LEN * CounterSchema.FIELD_SIZE;
-        // SDS 固定结构：按大端 32 位编码
+
+        // 获取原始数据，判断是否需要重建计数结构
         byte[] raw = getRaw(sdsKey);
         boolean needRebuild = (raw == null || raw.length != expectedLen);
 
+        // 初始化结果映射
         Map<String, Long> result = new LinkedHashMap<>();
 
         if (needRebuild) {
-            // 限流与指数退避：避免在热点实体上触发重建风暴
+            log.info("计数结构不存在，需要重建");
+
+            // 检查是否处于退避状态，若处于则直接返回默认值
             if (inBackoff(entityType, entityId)) {
                 for (String m : metrics) {
                     result.put(m, 0L);
@@ -151,6 +166,7 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
+            // 检查速率限制器是否允许当前操作，若不允许则升级退避状态
             if (!allowedByRateLimiter(entityType, entityId)) {
                 escalateBackoff(entityType, entityId);
                 for (String m : metrics) {
@@ -159,13 +175,13 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
+            // 构造分布式锁键并尝试获取锁
             String lockKey = String.format("lock:sds-rebuild:%s:%s", entityType, entityId);
-
             RLock lock = redisson.getLock(lockKey);
             boolean locked = false;
 
             try {
-                // 使用 Redisson 看门狗机制：不指定租期，自动续约（由 Redisson 的 lockWatchdogTimeout 控制）
+                // 尝试立即获取锁，失败则升级退避状态
                 locked = lock.tryLock(0L, TimeUnit.MILLISECONDS);
                 if (!locked) {
                     escalateBackoff(entityType, entityId);
@@ -174,7 +190,8 @@ public class CounterServiceImpl implements CounterService {
                     }
                     return result;
                 }
-                // 依据位图分片统计真实计数（仅由持锁者执行重建）
+
+                // 重建计数结构：通过位图分片统计真实计数
                 byte[] newSds = new byte[expectedLen];
                 List<String> rebuildFields = new ArrayList<>();
                 for (String m : metrics) {
@@ -187,14 +204,18 @@ public class CounterServiceImpl implements CounterService {
                     result.put(m, sum);
                     rebuildFields.add(String.valueOf(idx));
                 }
-                // 回写SDS并清理聚合桶，避免重复加算
+
+                // 回写SDS数据并清理聚合桶，防止重复计算
                 setRaw(sdsKey, newSds);
                 if (!rebuildFields.isEmpty()) {
                     String aggKey = CounterKeys.aggKey(entityType, entityId);
                     redis.opsForHash().delete(aggKey, rebuildFields.toArray());
                 }
+
+                // 重置退避状态
                 resetBackoff(entityType, entityId);
             } catch (InterruptedException ie) {
+                // 处理中断异常，升级退避状态并返回默认值
                 Thread.currentThread().interrupt();
                 escalateBackoff(entityType, entityId);
                 for (String m : metrics) {
@@ -202,6 +223,7 @@ public class CounterServiceImpl implements CounterService {
                 }
                 return result;
             } finally {
+                // 释放锁资源
                 if (locked) {
                     try {
                         lock.unlock();
@@ -209,16 +231,23 @@ public class CounterServiceImpl implements CounterService {
                 }
             }
         } else {
+            // 直接从现有数据中读取计数值
             for (String m : metrics) {
                 Integer idx = CounterSchema.NAME_TO_IDX.get(m);
-                if (idx == null) continue;
+                if (idx == null) {
+                    continue;
+                }
+
                 int off = idx * CounterSchema.FIELD_SIZE;
                 long val = readInt32BE(raw, off); // 大端读取单段 32 位值
                 result.put(m, val);
             }
         }
+
+        // 返回最终结果
         return result;
     }
+
 
     /**
      * 批量获取实体计数（管道批量 GET 降低 RTT）。
@@ -379,7 +408,6 @@ public class CounterServiceImpl implements CounterService {
         RRateLimiter limiter = redisson.getRateLimiter(rlKey);
 
         // 初始化速率（如已存在则忽略）
-        limiter.trySetRate(RateType.OVERALL, ratePermits, Duration.ofSeconds(rateWindowSeconds));
         limiter.trySetRate(RateType.OVERALL, ratePermits, Duration.ofSeconds(rateWindowSeconds));
 
         return limiter.tryAcquire(1);

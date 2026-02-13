@@ -82,18 +82,29 @@ public class RelationServiceImpl implements RelationService {
      * @param toUserId 被关注的用户ID
      * @return 是否关注成功
      */
+    /**
+     * 关注用户功能实现。
+     *
+     * 该方法用于处理用户之间的关注关系，包括限流控制、数据库插入操作以及事件发布。
+     *
+     * @param fromUserId 发起关注的用户ID
+     * @param toUserId 被关注的用户ID
+     * @return 如果关注成功则返回true，否则返回false
+     */
     @Override
     @Transactional
     public boolean follow(long fromUserId, long toUserId) {
-        // Lua 脚本令牌桶限流
+        // 使用Lua脚本进行令牌桶限流，防止频繁调用
         Long ok = redis.execute(tokenScript, List.of("rl:follow:" + fromUserId), "100", "1");
-        if (ok == null || ok == 0L) {
+        if (ok == 0L) {
             return false;
         }
 
+        // 生成唯一ID并尝试插入关注关系到数据库
         long id = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
         int inserted = mapper.insertFollowing(id, fromUserId, toUserId, 1);
 
+        // 如果插入成功，则记录事件到消息表中
         if (inserted > 0) {
             try {
                 Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
