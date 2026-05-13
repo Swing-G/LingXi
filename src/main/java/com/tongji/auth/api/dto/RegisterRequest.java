@@ -13,8 +13,8 @@ import com.tongji.auth.model.IdentifierType;
 public record RegisterRequest(
         @NotNull(message = "账号类型不能为空") IdentifierType identifierType,
         @NotBlank(message = "账号不能为空") String identifier,
-        @NotBlank(message = "验证码不能为空") String code,
-        String password,
+        String code,
+        @NotBlank(message = "密码不能为空") String password,
         boolean agreeTerms
 ) {
 }

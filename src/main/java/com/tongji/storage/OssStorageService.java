@@ -74,7 +74,7 @@ public class OssStorageService {
                 request.setContentType(contentType);
             }
             URL url = client.generatePresignedUrl(request);
-            return url.toString();
+            return url.toString().replaceFirst("^http://", "https://");
         } finally {
             client.shutdown();
         }

@@ -35,6 +35,18 @@ public class ActionController {
     public ResponseEntity<Map<String, Object>> like(@Valid @RequestBody ActionRequest req,
                                                     @AuthenticationPrincipal Jwt jwt) {
         long uid = jwtService.extractUserId(jwt);
+
+//计数压测
+//        Long uid;
+//        try {
+//            // 尝试正常获取用户 ID
+//            uid = jwtService.extractUserId(jwt);
+//        } catch (NullPointerException e) {
+//            // 🚨【压测专属后门】如果报空指针（说明没带Token），直接随机生成一个用户ID！
+//            // 模拟 1 到 10000 个不同的用户在疯狂点赞
+//            uid = java.util.concurrent.ThreadLocalRandom.current().nextLong(1, 10000);
+//            // System.out.println("触发压测后门，当前模拟用户ID: " + userId); // 调试用，压测时建议注释掉防IO阻塞
+//        }
         boolean changed = counterService.like(req.getEntityType(), req.getEntityId(), uid);
         return ResponseEntity.ok(Map.of(
                 "changed", changed, // 标识这次操作是否改变状态（避免重复点击）

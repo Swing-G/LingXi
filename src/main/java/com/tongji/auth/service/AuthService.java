@@ -107,7 +107,10 @@ public class AuthService {
         if (identifierExists(request.identifierType(), identifier)) {
             throw new BusinessException(ErrorCode.IDENTIFIER_EXISTS);
         }
-        ensureVerificationSuccess(verificationService.verify(VerificationScene.REGISTER, identifier, request.code()));
+        validatePassword(request.password());
+        if (StringUtils.hasText(request.code())) {
+            ensureVerificationSuccess(verificationService.verify(VerificationScene.REGISTER, identifier, request.code()));
+        }
 
         User user = User.builder()
                 .phone(request.identifierType() == IdentifierType.PHONE ? identifier : null)
@@ -116,12 +119,8 @@ public class AuthService {
                 .avatar("https://static.zhiguang.cn/default-avatar.png")
                 .bio(null)
                 .tagsJson("[]")
+                .passwordHash(passwordEncoder.encode(request.password().trim()))
                 .build();
-
-        if (StringUtils.hasText(request.password())) {
-            validatePassword(request.password());
-            user.setPasswordHash(passwordEncoder.encode(request.password().trim()));
-        }
 
         userService.createUser(user);
         TokenPair tokenPair = jwtService.issueTokenPair(user);

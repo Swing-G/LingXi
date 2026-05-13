@@ -58,12 +58,25 @@ public class SecurityConfig {
                         // 知文详情页 RAG 问答（SSE 流式输出）允许匿名访问
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/*/qa/stream").permitAll()
                         .requestMatchers(
-                                "/api/v1/auth/send-code",
-                                "/api/v1/auth/register",
-                                "/api/v1/auth/login",
-                                "/api/v1/auth/token/refresh",
-                                "/api/v1/auth/logout",
-                                "/api/v1/auth/password/reset"
+                                 "/api/v1/auth/send-code",
+                                 "/api/v1/auth/register",
+                                 "/api/v1/auth/login",
+                                 "/api/v1/auth/token/refresh",
+                                 "/api/v1/auth/logout",
+                                 "/api/v1/auth/password/reset"
+
+                                // 计数压测时放行认证接口
+//                                "/api/v1/auth/send-code",
+//                                "/api/v1/auth/register",
+//                                "/api/v1/auth/login",
+//                                "/api/v1/auth/token/refresh",
+//                                "/api/v1/auth/logout",
+//                                "/api/v1/auth/password/reset",
+//                                // 压测时放行计数相关接口
+//                                "/api/v1/action/like",
+//                                "/api/v1/action/unlike",
+//                                "/api/v1/action/fav",
+//                                "/api/v1/action/unfav"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
