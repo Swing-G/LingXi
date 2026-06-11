@@ -23,6 +23,7 @@ import jakarta.annotation.PostConstruct;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -48,18 +49,40 @@ public class SearchIndexService {
 
     /**
      * 启动时若索引为空，进行历史数据回灌（分页）。
+     * 索引刚创建时分片可能尚未分配，带重试以容忍短暂不可用。
      */
     @PostConstruct
     public void ensureBackfill() {
         try {
-            long cnt = es.count(c -> c.index(INDEX)).count();
-            if (cnt > 0) return;
+            // 等待 ES 分片就绪（最多重试 10 次，间隔 2 秒）
+            long cnt = 0;
+            Exception lastEx = null;
+            for (int attempt = 0; attempt < 10; attempt++) {
+                if (attempt > 0) {
+                    Thread.sleep(Duration.ofSeconds(2));
+                }
+                try {
+                    cnt = es.count(c -> c.index(INDEX)).count();
+                    lastEx = null;
+                    break;
+                } catch (Exception e) {
+                    lastEx = e;
+                    log.info("Search index not ready yet (attempt {}/10), retrying...", attempt + 1);
+                }
+            }
+            if (lastEx != null) {
+                log.warn("Search index backfill skipped after retries: {}", lastEx.getMessage());
+                return;
+            }
+            if (cnt > 0) {
+                log.info("Search index already has {} documents, skipping backfill.", cnt);
+                return;
+            }
             int limit = 500;
             int offset = 0;
             while (true) {
                 List<KnowPostFeedRow> rows = knowPostMapper.listFeedPublic(limit, offset);
                 if (rows == null || rows.isEmpty()) {
-                    // 没有更多数据，结束回灌
                     break;
                 }
                 for (KnowPostFeedRow r : rows) {

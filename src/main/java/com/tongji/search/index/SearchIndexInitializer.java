@@ -9,16 +9,20 @@ import co.elastic.clients.elasticsearch._types.mapping.LongNumberProperty;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TextProperty;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
 /**
  * 搜索索引初始化：应用启动时确保索引与 Mapping 存在。
  * 注意：title/body 使用 IK 分词器，需在 ES 集群安装 analysis-ik 插件。
+ * 如果索引已存在但 Mapping 不完整，需手动删除索引后重启让本类重建。
  */
 @Service
 @RequiredArgsConstructor
 public class SearchIndexInitializer {
+    private static final Logger log = LoggerFactory.getLogger(SearchIndexInitializer.class);
     private final ElasticsearchClient es;
     private static final String INDEX = "zhiguang_content_index";
 
@@ -27,6 +31,9 @@ public class SearchIndexInitializer {
         try {
             boolean exists = es.indices().exists(e -> e.index(INDEX)).value();
             if (exists) {
+                log.info("Search index '{}' already exists — skipping mapping creation. " +
+                         "If Chinese search returns no results, verify the IK plugin is installed " +
+                         "and consider deleting the index to recreate with correct mapping.", INDEX);
                 return;
             }
 
@@ -51,8 +58,11 @@ public class SearchIndexInitializer {
                     .properties("is_top", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
                     .properties("title_suggest", Property.of(p -> p.completion(CompletionProperty.of(b -> b)))
                     )));
-        } catch (Exception ignored) {
-            // 忽略异常以保证应用启动；索引可能由后续写入动态创建，但 Mapping 将不完整
+            log.info("Search index '{}' created successfully with IK analyzer mapping.", INDEX);
+        } catch (Exception e) {
+            log.error("Failed to create search index '{}': {}. " +
+                      "This usually means the IK analyzer plugin is not installed in Elasticsearch. " +
+                      "Install it via: elasticsearch-plugin install analysis-ik", INDEX, e.getMessage());
         }
     }
 }
