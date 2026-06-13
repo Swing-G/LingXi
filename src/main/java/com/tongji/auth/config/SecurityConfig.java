@@ -59,6 +59,8 @@ public class SecurityConfig {
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/*/qa/stream").permitAll()
                         // 搜索与联想建议：允许匿名访问（登录用户获得更完整数据）
                         .requestMatchers("/api/v1/search", "/api/v1/search/suggest").permitAll()
+                        // LLM 排队状态查询（SSE 流）：允许匿名访问
+                        .requestMatchers("/api/v1/llm/queue/**").permitAll()
                         .requestMatchers(
                                  "/api/v1/auth/send-code",
                                  "/api/v1/auth/register",

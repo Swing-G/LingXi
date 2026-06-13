@@ -1,5 +1,7 @@
 package com.tongji.llm.service.impl;
 
+import com.tongji.llm.queue.LlmQueueService;
+import com.tongji.llm.queue.LlmQueueService.QueueEvent;
 import com.tongji.llm.service.KnowPostDescriptionService;
 import com.tongji.common.exception.BusinessException;
 import com.tongji.common.exception.ErrorCode;
@@ -9,24 +11,34 @@ import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class KnowPostDescriptionServiceImpl implements KnowPostDescriptionService {
 
     private final ChatClient chatClient;
+    private final LlmQueueService queueService;
 
     /**
-     * 基于正文生成不超过 50 字的中文描述。
+     * 基于正文生成不超过 50 字的中文描述（接入分布式排队限流）。
      */
     public String generateDescription(String content) {
         if (content == null || content.trim().isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "正文内容不能为空");
         }
-        String system = "你是中文文案编辑。请基于用户提供的知文正文，生成一个中文描述，简洁有吸引力，且不超过50个汉字。不输出解释或多段，只输出结果。";
-        String user = "正文如下：\n\n" + content + "\n\n请直接给出不超过50字的中文描述。";
+
+        String requestId = UUID.randomUUID().toString();
+        var msg = queueService.tryAcquire(requestId);
+
+        if (msg.event() == QueueEvent.REJECTED) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "系统繁忙，请稍后重试");
+        }
 
         try {
+            String system = "你是中文文案编辑。请基于用户提供的知文正文，生成一个中文描述，简洁有吸引力，且不超过50个汉字。不输出解释或多段，只输出结果。";
+            String user = "正文如下：\n\n" + content + "\n\n请直接给出不超过50字的中文描述。";
+
             String result = chatClient
                     .prompt()
                     .system(system)
@@ -41,6 +53,8 @@ public class KnowPostDescriptionServiceImpl implements KnowPostDescriptionServic
             return postProcess(result);
         } catch (Exception e) {
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, "大模型调用失败: " + e.getMessage());
+        } finally {
+            queueService.release(requestId);
         }
     }
 

@@ -1,80 +1,171 @@
 package com.tongji.llm.rag;
 
+import com.tongji.llm.queue.LlmQueueService;
+import com.tongji.llm.queue.LlmQueueService.QueueEvent;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * RAG 问答查询服务：
- * - 在问答前保障索引，检索相关上下文并构造提示词
- * - 通过 ChatClient 以流式（SSE）方式返回模型输出
+ * - 接入分布式队列限流，排队期间 SSE 推送位置更新
+ * - 获取槽位后检索上下文并流式输出模型回答
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class RagQueryService {
-    // 向量检索接口（Elasticsearch 向量库封装）
+
     private final VectorStore vectorStore;
-    // 大模型对话客户端（在 LlmConfig 中通过 @Qualifier 绑定 deepSeekChatModel）
     private final ChatClient chatClient;
-    // 索引服务：确保帖子在问答前已建立/更新索引
     private final RagIndexService indexService;
+    private final LlmQueueService queueService;
 
     /**
-     * 使用 WebFlux 返回回答内容的流。
+     * 流式问答（接入排队限流）。
+     * 排队期间推送 queue 事件，获取槽位后推送 answer 内容。
      */
-    public Flux<String> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
-        // 轻量保障：如索引不存在或指纹未变更则跳过，否则重建
-        indexService.ensureIndexed(postId);
+    public Flux<ServerSentEvent<String>> streamAnswerFlux(long postId, String question, int topK, int maxTokens) {
+        String requestId = UUID.randomUUID().toString();
 
-        // 检索上下文：先宽召回，再按 postId 做服务端过滤
-        List<String> contexts = searchContexts(String.valueOf(postId), question, Math.max(1, topK));
-        // 组装上下文文本，分隔符用于提示词中分块标识
-        String context = String.join("\n\n---\n\n", contexts);
+        LlmQueueService.QueueMessage firstAttempt = queueService.tryAcquire(requestId);
 
-        // 系统提示：限定只依据提供的上下文作答，无法确定需明确说明
-        String system = "你是中文知识助手。只能依据提供的知文上下文回答；无法确定的请说明不确定。";
-        // 用户消息：包含问题和召回到的上下文
-        String user = "问题：" + question + "\n\n上下文如下（可能不完整）：\n" + context + "\n\n请基于以上上下文作答。";
+        if (firstAttempt.event() == QueueEvent.ACQUIRED) {
+            return doStreamAnswer(postId, question, topK, maxTokens, requestId);
+        }
 
-        return chatClient
-                .prompt() // 构建对话
-                .system(system)
-                .user(user)
-                .options(DeepSeekChatOptions.builder()
-                        .model("deepseek-chat") // 指定 DeepSeek 模型
-                        .temperature(0.2)       // 低温度：更稳健、少发散
-                        .maxTokens(maxTokens)    // 控制最大输出长度
-                        .build())
-                .stream()  // 以流式（SSE）返回模型输出
-                .content(); // 转换为 Flux<String>
+        if (firstAttempt.event() == QueueEvent.REJECTED) {
+            return Flux.just(
+                    ServerSentEvent.<String>builder()
+                            .event("error")
+                            .data("系统繁忙，当前排队人数过多，请稍后重试")
+                            .build()
+            );
+        }
+
+        int startPosition = firstAttempt.position();
+
+        return Flux.concat(
+                // 排队通知
+                Flux.just(ServerSentEvent.<String>builder()
+                        .event("queued")
+                        .data("{\"position\":" + startPosition + "}")
+                        .build()),
+                // 排队等待 + 位置更新
+                queueService.streamQueue(requestId)
+                        .map(msg -> switch (msg.event()) {
+                            case POSITION_UPDATE -> ServerSentEvent.<String>builder()
+                                    .event("position")
+                                    .data("{\"position\":" + msg.position()
+                                            + ",\"totalWaiting\":" + msg.totalWaiting() + "}")
+                                    .build();
+                            case ACQUIRED -> ServerSentEvent.<String>builder()
+                                    .event("ready")
+                                    .data("{}")
+                                    .build();
+                            case TIMEOUT -> ServerSentEvent.<String>builder()
+                                    .event("timeout")
+                                    .data("{\"message\":\"排队超时，请稍后重试\"}")
+                                    .build();
+                            case REJECTED -> ServerSentEvent.<String>builder()
+                                    .event("error")
+                                    .data("{\"message\":\"" + msg.message() + "\"}")
+                                    .build();
+                        }),
+                // 获取槽位后流式输出答案
+                Flux.defer(() -> doStreamAnswerRaw(postId, question, topK, maxTokens)
+                        .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build()))
+                        .doFinally(signal -> queueService.release(requestId))
+        );
     }
 
-    /**
-     * 语义检索上下文：
-     * - 先进行宽召回（fetchK ≥ 3×topK，至少 20）提高召回率
-     * - 再按 metadata.postId 做服务端过滤，避免跨帖子污染
-     */
+    private Flux<ServerSentEvent<String>> doStreamAnswer(long postId, String question, int topK, int maxTokens, String requestId) {
+        return doStreamAnswerRaw(postId, question, topK, maxTokens)
+                .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build())
+                .doFinally(signal -> queueService.release(requestId));
+    }
+
+    /** 返回原始文本流（不包装 SSE），供内部组合用 */
+    private Flux<String> doStreamAnswerRaw(long postId, String question, int topK, int maxTokens) {
+        return Flux.defer(() -> {
+            try {
+                indexService.ensureIndexed(postId);
+            } catch (Exception e) {
+                log.error("RAG ensureIndexed failed for post {}: {}", postId, e.getMessage(), e);
+                return Flux.just("索引构建失败，请稍后重试。");
+            }
+
+            List<String> contexts = searchContexts(String.valueOf(postId), question, Math.max(1, topK));
+            log.info("RAG query: postId={}, question={}, topK={}, contextsFound={}",
+                    postId, question.substring(0, Math.min(30, question.length())), topK, contexts.size());
+
+            if (contexts.isEmpty()) {
+                return Flux.just("未找到相关内容，可能文章正文暂不可读。");
+            }
+
+            String context = String.join("\n\n---\n\n", contexts);
+
+            String system = "你是中文知识助手。只能依据提供的知文上下文回答；无法确定的请说明不确定。";
+            String user = "问题：" + question + "\n\n上下文如下（可能不完整）：\n" + context + "\n\n请基于以上上下文作答。";
+
+            return chatClient
+                    .prompt()
+                    .system(system)
+                    .user(user)
+                    .options(DeepSeekChatOptions.builder()
+                            .model("deepseek-chat")
+                            .temperature(0.2)
+                            .maxTokens(maxTokens)
+                            .build())
+                    .stream()
+                    .content()
+                    .timeout(Duration.ofSeconds(120))
+                    .doOnError(e -> log.error("RAG DeepSeek call failed: {}", e.getMessage(), e))
+                    .onErrorResume(e -> {
+                        String msg = e.getMessage();
+                        log.error("RAG stream error (full): {}", msg, e);
+                        if (msg != null && msg.contains("429")) {
+                            return Flux.just("请求过于频繁，请稍等几秒再试。");
+                        }
+                        if (msg != null && (msg.contains("timeout") || msg.contains("Timeout"))) {
+                            return Flux.just("回答生成超时，请简化问题后重试。");
+                        }
+                        if (msg != null && msg.contains("401")) {
+                            return Flux.just("AI 服务认证失败，请检查 API Key 配置。");
+                        }
+                        if (msg != null && msg.contains("402")) {
+                            return Flux.just("AI 服务余额不足，请充值后重试。");
+                        }
+                        return Flux.just("生成失败：" + (msg != null ? msg.substring(0, Math.min(100, msg.length())) : "未知错误"));
+                    });
+        });
+    }
+
     private List<String> searchContexts(String postId, String query, int topK) {
-        int fetchK = Math.max(topK * 3, 20); // 宽召回：扩大初始检索集合
+        int fetchK = Math.max(topK * 3, 20);
         List<Document> docs = vectorStore.similaritySearch(
-                SearchRequest.builder().query(query).topK(fetchK).build() // 语义相似检索
+                SearchRequest.builder().query(query).topK(fetchK).build()
         );
         List<String> out = new ArrayList<>(topK);
         for (Document d : docs) {
             Object pid = d.getMetadata().get("postId");
-            if (pid != null && postId.equals(String.valueOf(pid))) { // 仅保留当前帖子对应的切片
+            if (pid != null && postId.equals(String.valueOf(pid))) {
                 String txt = d.getText();
                 if (txt != null && !txt.isEmpty()) {
                     out.add(txt);
-                    if (out.size() >= topK) break; // 只取前 topK 个上下文
+                    if (out.size() >= topK) break;
                 }
             }
         }

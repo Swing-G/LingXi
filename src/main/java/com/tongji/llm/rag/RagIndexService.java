@@ -13,9 +13,18 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * RAG 索引构建服务：
@@ -39,11 +48,14 @@ public class RagIndexService {
     private final EsProperties esProps;
 
     public void ensureIndexed(long postId) {
-        // 当前策略：在问答前直接尝试重建（指纹未变化时会跳过）
-        reindexSinglePost(postId);
+        reindexSinglePost(postId, true);
     }
 
     public int reindexSinglePost(long postId) {
+        return reindexSinglePost(postId, false);
+    }
+
+    public int reindexSinglePost(long postId, boolean force) {
         KnowPostDetailRow row = knowPostMapper.findDetailById(postId);
         if (row == null) {
             log.warn("Post {} not found", postId);
@@ -62,11 +74,11 @@ public class RagIndexService {
             return 0;
         }
 
-        // 指纹检测：如未变化则跳过重建
+        // 指纹检测：如未变化则跳过重建（force=true 时跳过检测）
         String currentSha = row.getContentSha256();
         String currentEtag = row.getContentEtag();
-        if (isUpToDate(postId, currentSha, currentEtag)) {
-            log.info("Post {} already indexed with same fingerprint, skip", postId);
+        if (!force && isUpToDate(postId, currentSha, currentEtag)) {
+            log.info("Post {} already indexed with same fingerprint, skip (force={})", postId, force);
             return 0;
         }
 
@@ -168,15 +180,66 @@ public class RagIndexService {
     }
 
     /**
-     * 拉取正文内容（Markdown 文本）。
+     * 拉取正文内容，自动检测字符编码（UTF-8 / GB18030 回退）。
      */
     private String fetchContent(String url) {
+        if (url == null || url.isBlank()) return null;
         try {
-            return http.getForObject(url, String.class);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setAccept(List.of(MediaType.TEXT_HTML, MediaType.TEXT_PLAIN, MediaType.APPLICATION_JSON));
+            ResponseEntity<byte[]> resp = http.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), byte[].class);
+            byte[] bytes = resp.getBody();
+            if (bytes == null || bytes.length == 0) return null;
+
+            MediaType contentType = resp.getHeaders().getContentType();
+            Charset headerCharset = (contentType != null) ? contentType.getCharset() : null;
+            Charset metaCharset = sniffHtmlCharset(bytes);
+            Charset charset = pickCharset(bytes, headerCharset, metaCharset);
+            return new String(bytes, charset);
         } catch (Exception e) {
             log.error("Fetch content failed: {}", e.getMessage());
             return null;
         }
+    }
+
+    private Charset pickCharset(byte[] bytes, Charset headerCharset, Charset metaCharset) {
+        if (metaCharset != null) return metaCharset;
+        if (headerCharset == null) {
+            return countReplacement(new String(bytes, StandardCharsets.UTF_8))
+                    <= countReplacement(new String(bytes, Charset.forName("GB18030")))
+                    ? StandardCharsets.UTF_8 : Charset.forName("GB18030");
+        }
+        if (StandardCharsets.ISO_8859_1.equals(headerCharset) || StandardCharsets.US_ASCII.equals(headerCharset)) {
+            int u = countReplacement(new String(bytes, StandardCharsets.UTF_8));
+            int g = countReplacement(new String(bytes, Charset.forName("GB18030")));
+            int h = countReplacement(new String(bytes, headerCharset));
+            if (u <= g && u <= h) return StandardCharsets.UTF_8;
+            if (g <= h) return Charset.forName("GB18030");
+        }
+        return headerCharset;
+    }
+
+    private Charset sniffHtmlCharset(byte[] bytes) {
+        int limit = Math.min(bytes.length, 8192);
+        String head = new String(bytes, 0, limit, StandardCharsets.ISO_8859_1);
+        Matcher m = Pattern.compile("charset\\s*=\\s*['\\\"]?([a-zA-Z0-9_\\-]+)", Pattern.CASE_INSENSITIVE).matcher(head);
+        if (!m.find()) return null;
+        String cs = m.group(1);
+        if (cs == null || cs.isBlank()) return null;
+        cs = cs.trim();
+        if ("utf8".equalsIgnoreCase(cs)) return StandardCharsets.UTF_8;
+        if ("gbk".equalsIgnoreCase(cs) || "gb2312".equalsIgnoreCase(cs) || "gb18030".equalsIgnoreCase(cs))
+            return Charset.forName("GB18030");
+        try { return Charset.forName(cs); } catch (Exception e) { return null; }
+    }
+
+    private int countReplacement(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        int cnt = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == '�') cnt++;
+        }
+        return cnt;
     }
 
     /**

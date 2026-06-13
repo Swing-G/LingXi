@@ -3,11 +3,14 @@ package com.tongji.knowpost.api;
 import com.tongji.llm.rag.RagIndexService;
 import com.tongji.llm.rag.RagQueryService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/knowposts")
 @Validated
@@ -22,7 +25,7 @@ public class KnowPostRagController {
      * 示例：GET /api/v1/knowposts/{id}/qa/stream?question=...&topK=5&maxTokens=1024
      */
     @GetMapping(value = "/{id}/qa/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> qaStream(@PathVariable("id") long id,
+    public Flux<ServerSentEvent<String>> qaStream(@PathVariable("id") long id,
                                  @RequestParam("question") String question,
                                  @RequestParam(value = "topK", defaultValue = "5") int topK,
                                  @RequestParam(value = "maxTokens", defaultValue = "1024") int maxTokens) {
@@ -31,9 +34,14 @@ public class KnowPostRagController {
 
     /**
      * 手动触发单篇索引重建（返回重建的切片数）。
+     * 传 force=true 可强制重建（即使指纹未变化，如修复编码问题后）。
      */
     @PostMapping("/{id}/rag/reindex")
-    public int reindex(@PathVariable("id") long id) {
-        return indexService.reindexSinglePost(id);
+    public int reindex(@PathVariable("id") long id,
+                       @RequestParam(value = "force", defaultValue = "false") boolean force) {
+        log.info("RAG reindex requested: postId={}, force={}", id, force);
+        int result = indexService.reindexSinglePost(id, force);
+        log.info("RAG reindex result: postId={}, chunks={}", id, result);
+        return result;
     }
 }
