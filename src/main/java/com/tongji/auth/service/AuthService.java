@@ -406,7 +406,7 @@ public class AuthService {
      * @return 随机昵称字符串。
      */
     private String generateNickname() {
-        return "知光用户" + UUID.randomUUID().toString().substring(0, 8);
+        return "灵析用户" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     /**

@@ -37,6 +37,7 @@ import com.tongji.knowpost.model.KnowPostFeedRow;
  */
 @Service
 @RequiredArgsConstructor
+@org.springframework.context.annotation.DependsOn("searchIndexInitializer")
 public class SearchIndexService {
     private static final Logger log = LoggerFactory.getLogger(SearchIndexService.class);
     private static final String INDEX = "zhiguang_content_index";
@@ -49,7 +50,7 @@ public class SearchIndexService {
 
     /**
      * 启动时若索引为空，进行历史数据回灌（分页）。
-     * 索引刚创建时分片可能尚未分配，带重试以容忍短暂不可用。
+     * 先确保索引存在，然后等待分片就绪，带重试以容忍短暂不可用。
      */
     @PostConstruct
     public void ensureBackfill() {

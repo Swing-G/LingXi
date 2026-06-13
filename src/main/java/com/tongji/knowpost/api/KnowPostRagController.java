@@ -2,6 +2,7 @@ package com.tongji.knowpost.api;
 
 import com.tongji.llm.rag.RagIndexService;
 import com.tongji.llm.rag.RagQueryService;
+import com.tongji.search.index.SearchIndexService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -19,6 +20,7 @@ public class KnowPostRagController {
 
     private final RagIndexService indexService;
     private final RagQueryService ragQueryService;
+    private final SearchIndexService searchIndexService;
 
     /**
      * 单篇知文 RAG 问答（WebFlux + Flux 流式输出）。
@@ -43,5 +45,14 @@ public class KnowPostRagController {
         int result = indexService.reindexSinglePost(id, force);
         log.info("RAG reindex result: postId={}, chunks={}", id, result);
         return result;
+    }
+
+    /**
+     * 手动触发搜索索引重建（同步写入 ES，用于 Canal 未运行时补数据）。
+     */
+    @PostMapping("/{id}/search/reindex")
+    public String searchReindex(@PathVariable("id") long id) {
+        searchIndexService.upsertKnowPost(id);
+        return "ok";
     }
 }

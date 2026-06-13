@@ -16,6 +16,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.tongji.counter.service.CounterService;
 import com.tongji.storage.config.OssProperties;
 import com.tongji.llm.rag.RagIndexService;
+import com.tongji.search.index.SearchIndexService;
 import com.tongji.cache.hotkey.HotKeyDetector;
 import jakarta.annotation.Resource;
 import org.slf4j.Logger;
@@ -51,6 +52,7 @@ public class KnowPostServiceImpl implements KnowPostService {
     private static final int DETAIL_LAYOUT_VER = 1;
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
     private final RagIndexService ragIndexService;
+    private final SearchIndexService searchIndexService;
 
     // 手动编写构造器，Spring的@Qualifier直接标注在参数上（核心）
     public KnowPostServiceImpl(
@@ -63,7 +65,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             StringRedisTemplate redis,
             @Qualifier("knowPostDetailCache") Cache<String, KnowPostDetailResponse> knowPostDetailCache,
             HotKeyDetector hotKey,
-            RagIndexService ragIndexService
+            RagIndexService ragIndexService,
+            SearchIndexService searchIndexService
     ) {
         this.mapper = mapper;
         this.idGen = idGen;
@@ -72,9 +75,10 @@ public class KnowPostServiceImpl implements KnowPostService {
         this.counterService = counterService;
         this.userCounterService = userCounterService;
         this.redis = redis;
-        this.knowPostDetailCache = knowPostDetailCache; // 带@Qualifier的参数赋值
+        this.knowPostDetailCache = knowPostDetailCache;
         this.hotKey = hotKey;
         this.ragIndexService = ragIndexService;
+        this.searchIndexService = searchIndexService;
     }
     /**
      * 创建草稿并返回新 ID。
@@ -175,7 +179,13 @@ public class KnowPostServiceImpl implements KnowPostService {
             userCounterService.incrementPosts(creatorId, 1);
         } catch (Exception ignored) {}
 
-        // 发布成功后触发一次预索引，减少首次问答冷启动
+        // 发布成功后同步写入搜索索引（无需等待 Canal）
+        try {
+            searchIndexService.upsertKnowPost(id);
+        } catch (Exception e) {
+            log.warn("Search index update after publish failed, post {}: {}", id, e.getMessage());
+        }
+        // RAG 预索引
         try {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
