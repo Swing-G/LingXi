@@ -1,4 +1,4 @@
-﻿package com.tongji.llm.rag;
+package com.tongji.llm.rag;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
