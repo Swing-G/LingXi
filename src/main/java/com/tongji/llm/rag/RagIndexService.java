@@ -48,7 +48,8 @@ public class RagIndexService {
     private final EsProperties esProps;
 
     public void ensureIndexed(long postId) {
-        reindexSinglePost(postId, true);
+        // 仅当指纹变化时才重建索引，避免每次 RAG 查询都重新下载/切片/嵌入
+        reindexSinglePost(postId, false);
     }
 
     public int reindexSinglePost(long postId) {
@@ -91,38 +92,51 @@ public class RagIndexService {
 
         // 先按 Markdown 标题切段，再做固定长度切片（带重叠）
         List<String> chunks = chunkMarkdown(text);
+        if (chunks.isEmpty()) {
+            log.warn("Post {} has no chunks after splitting", postId);
+            return 0;
+        }
+
         // 幂等 upsert：先删除旧切片
         deleteExistingChunks(postId);
 
-        // 组装 Document（文本 + 业务元数据），用于向量写入与检索过滤
-        List<Document> docs = new ArrayList<>(chunks.size());
-        for (int i = 0; i < chunks.size(); i++) {
-            String cid = postId + "#" + i;
-            Map<String, Object> meta = new HashMap<>();
-            meta.put("postId", String.valueOf(postId));
-            meta.put("chunkId", cid);
-            meta.put("position", i);
-            meta.put("contentEtag", currentEtag);
-            meta.put("contentSha256", currentSha);
-            meta.put("contentUrl", row.getContentUrl());
-            meta.put("title", row.getTitle());
-            docs.add(new Document(chunks.get(i), meta));
-        }
-        try {
-            // 批量写入向量库
-            vectorStore.add(docs);
-            // 强制刷新 ES 索引，确保紧接着的搜索能查到刚写入的文档
-            try {
-                es.indices().refresh(r -> r.index(esProps.getIndex()));
-            } catch (Exception e) {
-                log.warn("ES refresh failed for post {}: {}", postId, e.getMessage());
+        // 组装 Document（文本 + 业务元数据），分批次写入向量库
+        // OpenAI text-embedding-v4 单次最多 10 条，超过会报 400 错误
+        int batchSize = 10;
+        int written = 0;
+        for (int batchStart = 0; batchStart < chunks.size(); batchStart += batchSize) {
+            int batchEnd = Math.min(batchStart + batchSize, chunks.size());
+            List<Document> batchDocs = new ArrayList<>(batchEnd - batchStart);
+            for (int i = batchStart; i < batchEnd; i++) {
+                String cid = postId + "#" + i;
+                Map<String, Object> meta = new HashMap<>();
+                meta.put("postId", String.valueOf(postId));
+                meta.put("chunkId", cid);
+                meta.put("position", i);
+                meta.put("contentEtag", currentEtag);
+                meta.put("contentSha256", currentSha);
+                meta.put("contentUrl", row.getContentUrl());
+                meta.put("title", row.getTitle());
+                batchDocs.add(new Document(chunks.get(i), meta));
             }
+            try {
+                vectorStore.add(batchDocs);
+                written += batchDocs.size();
+            } catch (Exception e) {
+                log.error("VectorStore add batch [{}-{}) failed for post {}: {}",
+                        batchStart, batchEnd, postId, e.getMessage());
+                // 部分批次写入失败不阻止后续批次，保证至少有一些切片可用
+            }
+        }
+
+        // 强制刷新 ES 索引，确保紧接着的搜索能查到刚写入的文档
+        try {
+            es.indices().refresh(r -> r.index(esProps.getIndex()));
         } catch (Exception e) {
-            log.error("VectorStore add failed: {}", e.getMessage());
-            return 0;
+            log.warn("ES refresh failed for post {}: {}", postId, e.getMessage());
         }
         // 返回本次写入的切片数量
-        return docs.size();
+        return written;
     }
 
     /**

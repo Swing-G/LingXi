@@ -11,6 +11,7 @@ import com.tongji.knowpost.id.SnowflakeIdGenerator;
 import com.tongji.knowpost.mapper.KnowPostMapper;
 import com.tongji.knowpost.model.KnowPost;
 import com.tongji.knowpost.model.KnowPostDetailRow;
+import com.tongji.knowpost.api.dto.FeedPageResponse;
 import com.tongji.knowpost.api.dto.KnowPostDetailResponse;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.tongji.counter.service.CounterService;
@@ -48,6 +49,7 @@ public class KnowPostServiceImpl implements KnowPostService {
     @Qualifier("knowPostDetailCache")
     private final Cache<String, KnowPostDetailResponse> knowPostDetailCache;
     private final HotKeyDetector hotKey;
+    private final Cache<String, FeedPageResponse> feedPublicCache;
     private static final Logger log = LoggerFactory.getLogger(KnowPostServiceImpl.class);
     private static final int DETAIL_LAYOUT_VER = 1;
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
@@ -64,6 +66,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             UserCounterService userCounterService,
             StringRedisTemplate redis,
             @Qualifier("knowPostDetailCache") Cache<String, KnowPostDetailResponse> knowPostDetailCache,
+            @Qualifier("feedPublicCache") Cache<String, FeedPageResponse> feedPublicCache,
             HotKeyDetector hotKey,
             RagIndexService ragIndexService,
             SearchIndexService searchIndexService
@@ -76,6 +79,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         this.userCounterService = userCounterService;
         this.redis = redis;
         this.knowPostDetailCache = knowPostDetailCache;
+        this.feedPublicCache = feedPublicCache;
         this.hotKey = hotKey;
         this.ragIndexService = ragIndexService;
         this.searchIndexService = searchIndexService;
@@ -545,19 +549,23 @@ public class KnowPostServiceImpl implements KnowPostService {
     }
 
     /**
-     * 使指定ID的缓存失效。
+     * 使指定ID的缓存失效（详情页 + Feed 片段）。
+     * 当内容可见性/状态变更时调用，确保前端不再展示不应公开的内容。
      *
      * @param id 需要使缓存失效的帖子ID
      */
     private void invalidateCache(long id) {
-        // 构造缓存键，格式为 "knowpost:detail:{id}:v{版本号}"
-        String pageKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
+        // 1. 详情页缓存
+        String detailKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
+        redis.delete(detailKey);
+        knowPostDetailCache.invalidate(detailKey);
 
-        // 从Redis中删除对应的缓存键
-        redis.delete(pageKey);
+        // 2. Feed 片段缓存 —— 可见性变更后必须清理，否则前端 Feed 仍展示旧数据
+        String feedItemKey = "feed:item:" + id;
+        redis.delete(feedItemKey);
 
-        // 使本地缓存中的对应键失效
-        knowPostDetailCache.invalidate(pageKey);
+        // 3. 清空 Feed 页面本地缓存，强制下次请求从 DB 重建（DB 查询已过滤 visible='public'）
+        feedPublicCache.invalidateAll();
     }
 
     private List<String> parseStringArray(String json) {

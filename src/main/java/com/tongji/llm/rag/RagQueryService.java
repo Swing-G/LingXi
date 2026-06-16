@@ -154,19 +154,23 @@ public class RagQueryService {
     }
 
     private List<String> searchContexts(String postId, String query, int topK) {
-        int fetchK = Math.max(topK * 3, 20);
+        // 在向量检索层面通过 postId 过滤，确保只检索目标文章的切片，
+        // 避免因其他文章切片在相似度排名中靠前而挤掉目标文章的结果。
+        // 注意：ElasticsearchVectorStore 的 FilterExpressionConverter 会自动给
+        // key 加上 "metadata." 前缀，所以这里只需写 "postId"，不能写 "metadata.postId"
         List<Document> docs = vectorStore.similaritySearch(
-                SearchRequest.builder().query(query).topK(fetchK).build()
+                SearchRequest.builder()
+                        .query(query)
+                        .topK(topK)
+                        .filterExpression("postId == \"" + postId + "\"")
+                        .build()
         );
         List<String> out = new ArrayList<>(topK);
         for (Document d : docs) {
-            Object pid = d.getMetadata().get("postId");
-            if (pid != null && postId.equals(String.valueOf(pid))) {
-                String txt = d.getText();
-                if (txt != null && !txt.isEmpty()) {
-                    out.add(txt);
-                    if (out.size() >= topK) break;
-                }
+            String txt = d.getText();
+            if (txt != null && !txt.isEmpty()) {
+                out.add(txt);
+                if (out.size() >= topK) break;
             }
         }
         return out;
