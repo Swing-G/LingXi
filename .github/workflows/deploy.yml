@@ -1,0 +1,27 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: |
+          cd /opt/backend
+          git pull origin master
+
+      - name: Build
+        run: |
+          cd /opt/backend
+          mvn clean package -DskipTests -q
+
+      - name: Restart App
+        run: |
+          sudo systemctl restart zhiguang
+          sleep 5
+          sudo systemctl is-active --quiet zhiguang && echo "✔ Deploy success" || echo "✘ Deploy failed"
+          echo "--- Recent logs ---"
+          tail -5 /opt/app.log
