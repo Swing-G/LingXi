@@ -32,7 +32,8 @@
 > **代码仓库**：https://github.com/Swing-G/LingXi
 
 <!-- 截图占位：首页 Feed 流全貌 -->
-> 📸 **截图占位** — 首页全景
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/4924b6ac-d269-4e07-b4e5-8bc4a7073cd8" />
+
 
 ---
 
@@ -87,9 +88,6 @@
 - **Single-flight 机制**：相同 Key 并发 miss 仅触发一次 DB 查询，结果广播给所有等待方
 - **缓存失效**：通过 `FeedCacheInvalidationListener` 在发布/编辑知文时精准失效相关 Feed 缓存
 
-<!-- 截图占位：缓存架构图 + 命中率监控 -->
-> 📸 **截图占位** — 三级缓存架构图
-
 ---
 
 ### 1.2 关注链路解耦
@@ -141,8 +139,6 @@
 - `CanalKafkaBridge` 实现 `SmartLifecycle`，Spring 启动时自动连接 Canal
 - `SearchIndexInitializer` 启动检测 ES 索引为空时自动全量回填
 
-<!-- 截图占位：关注链路解耦架构图 -->
-> 📸 **截图占位** — Outbox + Canal + Kafka 架构全景
 
 ---
 
@@ -188,9 +184,6 @@
 - **Kafka 灾难回放**：计数丢失时可通过重放 Kafka 消息重建全部计数
 - **自愈机制**：`CounterRebuildConsumer` 支持按需重建指定实体的计数快照
 - **批量查询**：`getCountsBatch` 一次查询多个实体的多指标
-
-<!-- 截图占位：计数系统三路径架构图 -->
-> 📸 **截图占位** — 异步写 + 写聚合架构全景
 
 ---
 
@@ -247,8 +240,6 @@ event: done      → {}                              ← 完成
 - **公平调度**：信号量 + ZSET 保证并发公平，避免饥饿
 - **SSE 流式推送**：回答逐字输出，用户无需长时间等待
 
-<!-- 截图占位：RAG 问答面板 + 排队 SSE 流 -->
-> 📸 **截图占位** — RAG 问答全流程
 
 ---
 
@@ -266,8 +257,10 @@ event: done      → {}                              ← 完成
 | **验证码** | 6 位数字，5min TTL，60s 发送间隔，日限 10 次 |
 | **无感刷新** | 前端 AuthContext 60s 自动检查续期 |
 
-<!-- 截图占位：登录 + 注册页 -->
-> 📸 **截图占位** — 登录注册页面
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/e29b6be6-2ba9-464a-a7bf-8218a40b16fa" />
+
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/31bf22f1-7d14-4757-8d55-ea6445f8874a" />
+
 
 ---
 
@@ -287,8 +280,8 @@ event: done      → {}                              ← 完成
 | **可见性** | 公开 / 私有 / 好友可见 |
 | **置顶** | 支持置顶管理 |
 
-<!-- 截图占位：创作页 -->
-> 📸 **截图占位** — 创作编辑页面
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/1722e5dc-0e3a-4318-a083-d731ee7522d9" />
+
 
 ---
 
@@ -304,14 +297,15 @@ event: done      → {}                              ← 完成
 | **增量索引** | Canal Outbox 消费者，发布即索引 |
 | **编码兼容** | 自动识别 UTF-8 / GB18030 |
 
-<!-- 截图占位：搜索页 -->
-> 📸 **截图占位** — 搜索结果页
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/04e99994-b1dd-4f85-a241-696c52b21951" />
+
 
 ---
 
 ### 2.4 RAG 智能问答
 
 详见 [1.4 RAG 问答与并发调度](#14-rag-问答与并发调度)。
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/7c50c5f5-2c45-41e9-99a1-73b46d51f367" />
 
 ---
 
@@ -332,8 +326,6 @@ event: done      → {}                              ← 完成
 | 关注/取消关注 | `POST /api/v1/relations/follow/{userId}` / `unfollow` |
 | 粉丝/关注列表 | `GET /api/v1/relations/followers` / `following` |
 
-<!-- 截图占位：互动组件 -->
-> 📸 **截图占位** — LikeFavBar + FollowButton 组件
 
 ---
 
@@ -344,6 +336,8 @@ event: done      → {}                              ← 完成
 | **个人主页** | 用户信息 + 知文列表 |
 | **资料编辑** | 昵称 / 简介 / 标签 / 学校 / 公司 |
 | **头像上传** | OSS 预签名 URL 直传 |
+
+<img width="3200" height="1730" alt="image" src="https://github.com/user-attachments/assets/945d9d0a-fdd0-4d24-9e28-5ad7918222d7" />
 
 ---
 
