@@ -10,7 +10,6 @@
 
 <p align="center">
   <strong>灵析 LingXi — 开发者技术互动平台</strong><br/>
-  <sub>全栈开发 · 2025.09 - 2026.01</sub>
 </p>
 
 <p align="center">
