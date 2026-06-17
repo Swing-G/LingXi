@@ -1,7 +1,6 @@
 <p align="center">
   <a href="https://github.com/Swing-G/LingXi">
     <picture>
-      <!-- TODO: 替换为实际 Logo 图片 -->
       <source srcset="assets/lingxi-logo.png">
       <img src="assets/lingxi-logo.png" alt="灵析 LingXi — 开发者技术互动平台" width="200">
     </picture>
